@@ -1,0 +1,4 @@
+node_modules/
+location-data.db
+location-data.db-shm
+location-data.db-wal
