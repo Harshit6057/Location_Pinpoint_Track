@@ -33,6 +33,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/healthz", (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.post("/api/member-login", (req, res) => {
   const name = normalizeName(req.body?.name || "");
 

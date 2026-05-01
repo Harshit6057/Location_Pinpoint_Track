@@ -1,5 +1,16 @@
-const ADMIN_PASSWORD = "admin123";
-const REFRESH_INTERVAL_MS = 10000;
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  addDoc,
+  query,
+  orderBy,
+  onSnapshot,
+  serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { firebaseConfig, ADMIN_PASSWORD } from "./firebase-config.js";
 
 const appState = {
   currentMember: null,
@@ -8,16 +19,16 @@ const appState = {
   liveMarker: null,
   watchId: null,
   members: [],
-  memberPoints: [],
-  adminPoints: [],
+  allPoints: [],
   maps: {
     member: null,
-    admin: null,
+    admin: null
   },
   layers: {
     member: null,
-    admin: null,
+    admin: null
   },
+  unsubscribers: []
 };
 
 const nodes = {
@@ -41,8 +52,11 @@ const nodes = {
   adminDateMode: document.getElementById("adminDateMode"),
   adminDateInput: document.getElementById("adminDateInput"),
   memberList: document.getElementById("memberList"),
-  adminLocations: document.getElementById("adminLocations"),
+  adminLocations: document.getElementById("adminLocations")
 };
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
 
 setupTabs();
 setupMemberMap();
@@ -53,21 +67,9 @@ setupFilter();
 setupPinLiveLocation();
 setupDateFilters();
 updateDateInputState();
-bootstrap();
-
-async function bootstrap() {
-  await refreshMembers();
-  await Promise.all([refreshMemberPoints(), refreshAdminPoints()]);
-  renderMemberSection();
-  renderAdminSection();
-
-  setInterval(async () => {
-    await refreshMembers();
-    await Promise.all([refreshMemberPoints(), refreshAdminPoints()]);
-    renderMemberSection();
-    renderAdminSection();
-  }, REFRESH_INTERVAL_MS);
-}
+subscribeRealtimeData();
+renderMemberSection();
+renderAdminSection();
 
 function setupTabs() {
   nodes.memberTab.addEventListener("click", () => showPanel("member"));
@@ -94,7 +96,7 @@ function setupMemberMap() {
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors",
+    attribution: "&copy; OpenStreetMap contributors"
   }).addTo(appState.maps.member);
 }
 
@@ -104,7 +106,7 @@ function setupAdminMap() {
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors",
+    attribution: "&copy; OpenStreetMap contributors"
   }).addTo(appState.maps.admin);
 }
 
@@ -119,21 +121,16 @@ function setupMemberLogin() {
     }
 
     try {
-      await apiMemberLogin(name);
+      await upsertMember(name);
       appState.currentMember = name;
-      await refreshMembers();
-      await refreshMemberPoints();
-      await refreshAdminPoints();
+      nodes.memberName.value = "";
+      nodes.memberStatus.textContent = `Logged in as ${name}. Allow location access to sync live position.`;
+      requestLiveLocationAccess();
+      renderMemberSection();
+      renderAdminSection();
     } catch {
-      nodes.memberStatus.textContent = "Unable to login right now. Please try again.";
-      return;
+      nodes.memberStatus.textContent = "Could not login right now. Please try again.";
     }
-
-    nodes.memberName.value = "";
-    nodes.memberStatus.textContent = `Logged in as ${name}. Allow location access to sync live position.`;
-    requestLiveLocationAccess();
-    renderMemberSection();
-    renderAdminSection();
   });
 }
 
@@ -180,52 +177,44 @@ function setupPinLiveLocation() {
     }
 
     const point = {
-      id: crypto.randomUUID(),
       memberName: appState.currentMember,
       lat: Number(appState.livePosition.lat.toFixed(6)),
       lng: Number(appState.livePosition.lng.toFixed(6)),
-      createdAt: new Date().toISOString(),
+      createdAtMs: Date.now(),
+      createdAtIso: new Date().toISOString()
     };
 
     try {
-      await apiCreatePoint(point);
-      await refreshMembers();
-      await refreshMemberPoints();
-      await refreshAdminPoints();
+      await addPoint(point);
       nodes.memberStatus.textContent = "Live location pinned successfully.";
     } catch {
       nodes.memberStatus.textContent = "Could not save point. Please retry.";
-      return;
     }
-
-    renderMemberSection();
-    renderAdminSection();
   });
 }
 
 function setupDateFilters() {
-  nodes.memberDateMode.addEventListener("change", async () => {
+  nodes.memberDateMode.addEventListener("change", () => {
     updateDateInputState();
-    await refreshMemberPoints();
     renderMemberSection();
   });
-  nodes.memberDateInput.addEventListener("change", async () => {
-    await refreshMemberPoints();
+
+  nodes.memberDateInput.addEventListener("change", () => {
     renderMemberSection();
   });
-  nodes.adminDateMode.addEventListener("change", async () => {
+
+  nodes.adminDateMode.addEventListener("change", () => {
     updateDateInputState();
     if (!appState.adminUnlocked) {
       return;
     }
-    await refreshAdminPoints();
     renderAdminSection();
   });
-  nodes.adminDateInput.addEventListener("change", async () => {
+
+  nodes.adminDateInput.addEventListener("change", () => {
     if (!appState.adminUnlocked) {
       return;
     }
-    await refreshAdminPoints();
     renderAdminSection();
   });
 }
@@ -261,7 +250,7 @@ function requestLiveLocationAccess() {
           color: "#0d7a69",
           fillColor: "#0d7a69",
           fillOpacity: 0.35,
-          weight: 2,
+          weight: 2
         }).bindPopup("Your live location");
         appState.liveMarker.addTo(appState.maps.member);
       } else {
@@ -277,9 +266,39 @@ function requestLiveLocationAccess() {
     {
       enableHighAccuracy: true,
       timeout: 10000,
-      maximumAge: 2000,
+      maximumAge: 2000
     }
   );
+}
+
+function subscribeRealtimeData() {
+  const memberQuery = query(collection(db, "members"), orderBy("name", "asc"));
+  const pointQuery = query(collection(db, "points"), orderBy("createdAtMs", "desc"));
+
+  const unsubMembers = onSnapshot(
+    memberQuery,
+    (snapshot) => {
+      appState.members = snapshot.docs.map((d) => d.data().name).filter(Boolean);
+      renderAdminSection();
+    },
+    () => {
+      nodes.memberStatus.textContent = "Realtime sync failed for members.";
+    }
+  );
+
+  const unsubPoints = onSnapshot(
+    pointQuery,
+    (snapshot) => {
+      appState.allPoints = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      renderMemberSection();
+      renderAdminSection();
+    },
+    () => {
+      nodes.memberStatus.textContent = "Realtime sync failed for points.";
+    }
+  );
+
+  appState.unsubscribers.push(unsubMembers, unsubPoints);
 }
 
 function renderMemberSection() {
@@ -290,7 +309,8 @@ function renderMemberSection() {
     return;
   }
 
-  const points = appState.memberPoints;
+  const ownPoints = appState.allPoints.filter((point) => point.memberName === appState.currentMember);
+  const points = applyDateFilter(ownPoints, nodes.memberDateMode.value, nodes.memberDateInput.value);
 
   for (const point of points) {
     const marker = L.marker([point.lat, point.lng]).bindPopup(
@@ -300,14 +320,14 @@ function renderMemberSection() {
   }
 
   if (points.length) {
-    const latest = points[points.length - 1];
+    const latest = points[0];
     appState.maps.member.setView([latest.lat, latest.lng], 12);
   }
 
   renderList(
     nodes.memberLocations,
     points.map((point, index) => {
-      const dateText = new Date(point.createdAt).toLocaleString();
+      const dateText = new Date(point.createdAtMs || point.createdAtIso || Date.now()).toLocaleString();
       return `${index + 1}. ${point.lat}, ${point.lng} (${dateText})`;
     })
   );
@@ -318,7 +338,17 @@ function renderAdminSection() {
   const members = [...appState.members];
 
   rebuildMemberFilter(members, selected);
-  const filteredPoints = appState.adminPoints;
+
+  const filterValue = nodes.memberFilter.value;
+  const nameFilteredPoints =
+    filterValue === "ALL"
+      ? [...appState.allPoints]
+      : appState.allPoints.filter((point) => point.memberName === filterValue);
+  const filteredPoints = applyDateFilter(
+    nameFilteredPoints,
+    nodes.adminDateMode.value,
+    nodes.adminDateInput.value
+  );
 
   renderList(nodes.memberList, members.map((name) => `${name}`));
 
@@ -333,10 +363,10 @@ function renderAdminSection() {
       color: "#0d7a69",
       fillColor: "#ea6a43",
       fillOpacity: 0.9,
-      weight: 1,
+      weight: 1
     }).bindPopup(
       `<strong>${escapeHtml(point.memberName)}</strong><br>${point.lat}, ${point.lng}<br>${new Date(
-        point.createdAt
+        point.createdAtMs || point.createdAtIso || Date.now()
       ).toLocaleString()}`
     );
     marker.addTo(appState.layers.admin);
@@ -353,7 +383,7 @@ function renderAdminSection() {
     filteredPoints.map(
       (point, index) =>
         `${index + 1}. ${point.memberName} -> ${point.lat}, ${point.lng} (${new Date(
-          point.createdAt
+          point.createdAtMs || point.createdAtIso || Date.now()
         ).toLocaleString()})`
     )
   );
@@ -397,92 +427,44 @@ function renderList(node, items) {
   }
 }
 
-async function refreshMembers() {
-  try {
-    const response = await fetch("/api/members");
-    const payload = await response.json();
-    appState.members = Array.isArray(payload.members) ? payload.members : [];
-  } catch {
-    appState.members = [];
-  }
-}
-
-async function refreshMemberPoints() {
-  if (!appState.currentMember) {
-    appState.memberPoints = [];
-    return;
-  }
-
-  try {
-    appState.memberPoints = await apiGetPoints({
-      memberName: appState.currentMember,
-      dateMode: nodes.memberDateMode.value,
-      date: nodes.memberDateInput.value,
-    });
-  } catch {
-    appState.memberPoints = [];
-  }
-}
-
-async function refreshAdminPoints() {
-  try {
-    appState.adminPoints = await apiGetPoints({
-      memberName: nodes.memberFilter.value || "ALL",
-      dateMode: nodes.adminDateMode.value,
-      date: nodes.adminDateInput.value,
-    });
-  } catch {
-    appState.adminPoints = [];
-  }
-}
-
-async function apiMemberLogin(name) {
-  const response = await fetch("/api/member-login", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+async function upsertMember(name) {
+  const memberId = encodeURIComponent(name.toLowerCase());
+  const ref = doc(db, "members", memberId);
+  await setDoc(
+    ref,
+    {
+      name,
+      updatedAt: serverTimestamp()
     },
-    body: JSON.stringify({ name }),
-  });
-
-  if (!response.ok) {
-    throw new Error("member login failed");
-  }
+    { merge: true }
+  );
 }
 
-async function apiCreatePoint(point) {
-  const response = await fetch("/api/points", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(point),
+async function addPoint(point) {
+  await addDoc(collection(db, "points"), {
+    memberName: point.memberName,
+    lat: point.lat,
+    lng: point.lng,
+    createdAtMs: point.createdAtMs,
+    createdAtIso: point.createdAtIso,
+    createdAt: serverTimestamp()
   });
-
-  if (!response.ok) {
-    throw new Error("create point failed");
-  }
 }
 
-async function apiGetPoints({ memberName, dateMode, date }) {
-  const query = new URLSearchParams();
-  if (memberName) {
-    query.set("memberName", memberName);
-  }
-  if (dateMode) {
-    query.set("dateMode", dateMode);
-  }
-  if (date) {
-    query.set("date", date);
+function applyDateFilter(points, mode, inputDate) {
+  if (mode === "TODAY") {
+    const today = toDateKey(new Date());
+    return points.filter((point) => toDateKey(point.createdAtMs || point.createdAtIso) === today);
   }
 
-  const response = await fetch(`/api/points?${query.toString()}`);
-  if (!response.ok) {
-    throw new Error("get points failed");
+  if (mode === "DATE") {
+    if (!inputDate) {
+      return [];
+    }
+    return points.filter((point) => toDateKey(point.createdAtMs || point.createdAtIso) === inputDate);
   }
 
-  const payload = await response.json();
-  return Array.isArray(payload.points) ? payload.points : [];
+  return points;
 }
 
 function toDateKey(dateLike) {
@@ -494,11 +476,11 @@ function toDateKey(dateLike) {
 }
 
 function normalizeName(name) {
-  return name.replace(/\s+/g, " ").trim();
+  return String(name).replace(/\s+/g, " ").trim();
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
