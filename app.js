@@ -31,6 +31,7 @@ const appState = {
     member: null,
     admin: null
   },
+  highlightLayer: null,
   unsubscribers: []
 };
 
@@ -78,12 +79,37 @@ renderMemberSection();
 renderAdminSection();
 
 window.panToMap = (lat, lng, mapType) => {
-  if (mapType === 'member' && appState.maps.member) {
-    appState.maps.member.setView([lat, lng], 16);
-    document.getElementById("memberMap").scrollIntoView({ behavior: 'smooth', block: 'center' });
-  } else if (mapType === 'admin' && appState.maps.admin) {
-    appState.maps.admin.setView([lat, lng], 16);
-    document.getElementById("adminMap").scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const map = mapType === 'member' ? appState.maps.member : appState.maps.admin;
+  const layerGroup = mapType === 'member' ? appState.layers.member : appState.layers.admin;
+  
+  if (map) {
+    map.setView([lat, lng], 18);
+    const panelId = mapType === 'member' ? "memberMap" : "adminMap";
+    document.getElementById(panelId).scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // Remove previous highlight if any
+    if (appState.highlightLayer) {
+      appState.highlightLayer.remove();
+    }
+
+    // Add a highly visible ring to highlight the chosen location
+    appState.highlightLayer = L.circleMarker([lat, lng], {
+      radius: 25,
+      color: "#ff0000",
+      fillColor: "#ffeb3b",
+      fillOpacity: 0.6,
+      weight: 4,
+      dashArray: "5, 5"
+    }).addTo(map);
+
+    // Find the original marker and open its popup
+    layerGroup.eachLayer((layer) => {
+      const pos = layer.getLatLng();
+      // Match coordinates closely
+      if (Math.abs(pos.lat - lat) < 0.00001 && Math.abs(pos.lng - lng) < 0.00001) {
+        layer.openPopup();
+      }
+    });
   }
 };
 
