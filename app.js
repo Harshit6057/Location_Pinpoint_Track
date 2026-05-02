@@ -8,9 +8,12 @@ import {
   query,
   orderBy,
   onSnapshot,
-  serverTimestamp
+  serverTimestamp,
+  getDocs,
+  where
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import { firebaseConfig, ADMIN_PASSWORD } from "./firebase-config.js";
+import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+import { firebaseConfig } from "./firebase-config.js";
 
 const appState = {
   currentMember: null,
@@ -45,18 +48,21 @@ const nodes = {
   memberDateInput: document.getElementById("memberDateInput"),
   memberLocations: document.getElementById("memberLocations"),
   adminLoginForm: document.getElementById("adminLoginForm"),
-  adminPassword: document.getElementById("adminPassword"),
+  adminEmail: document.getElementById("adminEmail"),
   adminStatus: document.getElementById("adminStatus"),
   adminContent: document.getElementById("adminContent"),
   memberFilter: document.getElementById("memberFilter"),
   adminDateMode: document.getElementById("adminDateMode"),
   adminDateInput: document.getElementById("adminDateInput"),
   memberList: document.getElementById("memberList"),
-  adminLocations: document.getElementById("adminLocations")
+  adminLocations: document.getElementById("adminLocations"),
+  locationNote: document.getElementById("locationNote"),
+  locationPhoto: document.getElementById("locationPhoto")
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const storage = getStorage(firebaseApp);
 
 setupTabs();
 setupMemberMap();
@@ -70,6 +76,16 @@ updateDateInputState();
 subscribeRealtimeData();
 renderMemberSection();
 renderAdminSection();
+
+window.panToMap = (lat, lng, mapType) => {
+  if (mapType === 'member' && appState.maps.member) {
+    appState.maps.member.setView([lat, lng], 16);
+    document.getElementById("memberMap").scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else if (mapType === 'admin' && appState.maps.admin) {
+    appState.maps.admin.setView([lat, lng], 16);
+    document.getElementById("adminMap").scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+};
 
 function setupTabs() {
   nodes.memberTab.addEventListener("click", () => showPanel("member"));
@@ -128,30 +144,44 @@ function setupMemberLogin() {
       requestLiveLocationAccess();
       renderMemberSection();
       renderAdminSection();
-    } catch {
-      nodes.memberStatus.textContent = "Could not login right now. Please try again.";
+    } catch (err) {
+      console.error("Login Error:", err);
+      nodes.memberStatus.textContent = "Error: " + err.message;
     }
   });
 }
 
 function setupAdminLogin() {
-  nodes.adminLoginForm.addEventListener("submit", (event) => {
+  nodes.adminLoginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const password = nodes.adminPassword.value;
+    const email = nodes.adminEmail.value.trim().toLowerCase();
 
-    if (password !== ADMIN_PASSWORD) {
-      appState.adminUnlocked = false;
-      nodes.adminStatus.textContent = "Wrong password.";
-      nodes.adminContent.classList.add("hidden");
-      return;
+    nodes.adminStatus.textContent = "Checking admin access...";
+
+    try {
+      const adminQuery = query(
+        collection(db, "Location_Pinpoint", "project_data", "admins"),
+        where("email", "==", email)
+      );
+      const snapshot = await getDocs(adminQuery);
+
+      if (snapshot.empty) {
+        appState.adminUnlocked = false;
+        nodes.adminStatus.textContent = "Access denied. Admin email not found.";
+        nodes.adminContent.classList.add("hidden");
+        return;
+      }
+
+      appState.adminUnlocked = true;
+      nodes.adminStatus.textContent = "Admin unlocked.";
+      nodes.adminContent.classList.remove("hidden");
+      nodes.adminEmail.value = "";
+      renderAdminSection();
+      setTimeout(() => appState.maps.admin.invalidateSize(), 100);
+    } catch (err) {
+      console.error("Admin Login Error:", err);
+      nodes.adminStatus.textContent = "Error checking access: " + err.message;
     }
-
-    appState.adminUnlocked = true;
-    nodes.adminStatus.textContent = "Admin unlocked.";
-    nodes.adminContent.classList.remove("hidden");
-    nodes.adminPassword.value = "";
-    renderAdminSection();
-    setTimeout(() => appState.maps.admin.invalidateSize(), 100);
   });
 }
 
@@ -176,10 +206,31 @@ function setupPinLiveLocation() {
       return;
     }
 
+    const note = nodes.locationNote.value.trim();
+    const photoFile = nodes.locationPhoto.files[0];
+    
+    let photoUrl = null;
+    if (photoFile) {
+      nodes.memberStatus.textContent = "Uploading photo... Please wait.";
+      nodes.pinLiveLocationBtn.disabled = true;
+      const fileExt = photoFile.name.split('.').pop();
+      const storageRef = ref(storage, `location_photos/${Date.now()}_${appState.currentMember}.${fileExt}`);
+      try {
+        const snapshot = await uploadBytesResumable(storageRef, photoFile);
+        photoUrl = await getDownloadURL(snapshot.ref);
+      } catch (err) {
+        nodes.memberStatus.textContent = "Photo upload failed. Please try again.";
+        nodes.pinLiveLocationBtn.disabled = false;
+        return;
+      }
+    }
+
     const point = {
       memberName: appState.currentMember,
       lat: Number(appState.livePosition.lat.toFixed(6)),
       lng: Number(appState.livePosition.lng.toFixed(6)),
+      note: note,
+      photoUrl: photoUrl,
       createdAtMs: Date.now(),
       createdAtIso: new Date().toISOString()
     };
@@ -187,8 +238,12 @@ function setupPinLiveLocation() {
     try {
       await addPoint(point);
       nodes.memberStatus.textContent = "Live location pinned successfully.";
+      nodes.locationNote.value = "";
+      nodes.locationPhoto.value = "";
     } catch {
       nodes.memberStatus.textContent = "Could not save point. Please retry.";
+    } finally {
+      nodes.pinLiveLocationBtn.disabled = false;
     }
   });
 }
@@ -272,8 +327,8 @@ function requestLiveLocationAccess() {
 }
 
 function subscribeRealtimeData() {
-  const memberQuery = query(collection(db, "members"), orderBy("name", "asc"));
-  const pointQuery = query(collection(db, "points"), orderBy("createdAtMs", "desc"));
+  const memberQuery = query(collection(db, "Location_Pinpoint", "project_data", "members"), orderBy("name", "asc"));
+  const pointQuery = query(collection(db, "Location_Pinpoint", "project_data", "points"), orderBy("createdAtMs", "desc"));
 
   const unsubMembers = onSnapshot(
     memberQuery,
@@ -313,9 +368,16 @@ function renderMemberSection() {
   const points = applyDateFilter(ownPoints, nodes.memberDateMode.value, nodes.memberDateInput.value);
 
   for (const point of points) {
-    const marker = L.marker([point.lat, point.lng]).bindPopup(
-      `<strong>${escapeHtml(point.memberName)}</strong><br>${point.lat}, ${point.lng}`
-    );
+    let popupContent = `<strong>${escapeHtml(point.memberName)}</strong><br>${point.lat}, ${point.lng}`;
+    if (point.note) {
+      popupContent += `<br><em>${escapeHtml(point.note)}</em>`;
+    }
+    if (point.photoUrl) {
+      popupContent += `<br><a href="${escapeHtml(point.photoUrl)}" target="_blank"><img src="${escapeHtml(point.photoUrl)}" style="width: 100px; margin-top: 5px; border-radius: 4px;" alt="Location Photo" /></a>`;
+    }
+    popupContent += `<br><a href="https://www.google.com/maps?q=${point.lat},${point.lng}" target="_blank">View on Google Maps</a>`;
+
+    const marker = L.marker([point.lat, point.lng]).bindPopup(popupContent);
     marker.addTo(appState.layers.member);
   }
 
@@ -328,7 +390,14 @@ function renderMemberSection() {
     nodes.memberLocations,
     points.map((point, index) => {
       const dateText = new Date(point.createdAtMs || point.createdAtIso || Date.now()).toLocaleString();
-      return `${index + 1}. ${point.lat}, ${point.lng} (${dateText})`;
+      let extraHtml = '';
+      if (point.photoUrl) {
+        extraHtml += `<div style="margin-top: 8px;"><img src="${escapeHtml(point.photoUrl)}" style="max-width: 200px; border-radius: 6px; display: block;" alt="Location Photo" /></div>`;
+      }
+      if (point.note) {
+        extraHtml += `<div style="margin-top: 4px; font-style: italic; color: #555;">Note: ${escapeHtml(point.note)}</div>`;
+      }
+      return { html: `<div style="padding: 10px 0; border-bottom: 1px solid #eee;"><strong>${index + 1}.</strong> <a href="javascript:void(0)" onclick="window.panToMap(${point.lat}, ${point.lng}, 'member')" style="color: #0d7a69; font-weight: bold; text-decoration: underline; cursor: pointer;" title="Show on map">${point.lat}, ${point.lng}</a> <span style="color: #888; font-size: 0.9em;">(${dateText})</span>${extraHtml}</div>` };
     })
   );
 }
@@ -358,17 +427,22 @@ function renderAdminSection() {
 
   appState.layers.admin.clearLayers();
   for (const point of filteredPoints) {
+    let popupContent = `<strong>${escapeHtml(point.memberName)}</strong><br>${point.lat}, ${point.lng}<br>${new Date(point.createdAtMs || point.createdAtIso || Date.now()).toLocaleString()}`;
+    if (point.note) {
+      popupContent += `<br><em>${escapeHtml(point.note)}</em>`;
+    }
+    if (point.photoUrl) {
+      popupContent += `<br><a href="${escapeHtml(point.photoUrl)}" target="_blank"><img src="${escapeHtml(point.photoUrl)}" style="width: 100px; margin-top: 5px; border-radius: 4px;" alt="Location Photo" /></a>`;
+    }
+    popupContent += `<br><a href="https://www.google.com/maps?q=${point.lat},${point.lng}" target="_blank">View on Google Maps</a>`;
+
     const marker = L.circleMarker([point.lat, point.lng], {
       radius: 7,
       color: "#0d7a69",
       fillColor: "#ea6a43",
       fillOpacity: 0.9,
       weight: 1
-    }).bindPopup(
-      `<strong>${escapeHtml(point.memberName)}</strong><br>${point.lat}, ${point.lng}<br>${new Date(
-        point.createdAtMs || point.createdAtIso || Date.now()
-      ).toLocaleString()}`
-    );
+    }).bindPopup(popupContent);
     marker.addTo(appState.layers.admin);
   }
 
@@ -380,12 +454,17 @@ function renderAdminSection() {
 
   renderList(
     nodes.adminLocations,
-    filteredPoints.map(
-      (point, index) =>
-        `${index + 1}. ${point.memberName} -> ${point.lat}, ${point.lng} (${new Date(
-          point.createdAtMs || point.createdAtIso || Date.now()
-        ).toLocaleString()})`
-    )
+    filteredPoints.map((point, index) => {
+      const dateText = new Date(point.createdAtMs || point.createdAtIso || Date.now()).toLocaleString();
+      let extraHtml = '';
+      if (point.photoUrl) {
+        extraHtml += `<div style="margin-top: 8px;"><img src="${escapeHtml(point.photoUrl)}" style="max-width: 200px; border-radius: 6px; display: block;" alt="Location Photo" /></div>`;
+      }
+      if (point.note) {
+        extraHtml += `<div style="margin-top: 4px; font-style: italic; color: #555;">Note: ${escapeHtml(point.note)}</div>`;
+      }
+      return { html: `<div style="padding: 10px 0; border-bottom: 1px solid #eee;"><strong>${index + 1}. ${escapeHtml(point.memberName)}</strong> &rarr; <a href="javascript:void(0)" onclick="window.panToMap(${point.lat}, ${point.lng}, 'admin')" style="color: #0d7a69; font-weight: bold; text-decoration: underline; cursor: pointer;" title="Show on map">${point.lat}, ${point.lng}</a> <span style="color: #888; font-size: 0.9em;">(${dateText})</span>${extraHtml}</div>` };
+    })
   );
 }
 
@@ -420,16 +499,20 @@ function renderList(node, items) {
     return;
   }
 
-  for (const text of items) {
+  for (const itemData of items) {
     const item = document.createElement("li");
-    item.textContent = text;
+    if (typeof itemData === 'string') {
+      item.textContent = itemData;
+    } else if (itemData && itemData.html) {
+      item.innerHTML = itemData.html;
+    }
     node.appendChild(item);
   }
 }
 
 async function upsertMember(name) {
   const memberId = encodeURIComponent(name.toLowerCase());
-  const ref = doc(db, "members", memberId);
+  const ref = doc(db, "Location_Pinpoint", "project_data", "members", memberId);
   await setDoc(
     ref,
     {
@@ -441,10 +524,12 @@ async function upsertMember(name) {
 }
 
 async function addPoint(point) {
-  await addDoc(collection(db, "points"), {
+  await addDoc(collection(db, "Location_Pinpoint", "project_data", "points"), {
     memberName: point.memberName,
     lat: point.lat,
     lng: point.lng,
+    note: point.note || null,
+    photoUrl: point.photoUrl || null,
     createdAtMs: point.createdAtMs,
     createdAtIso: point.createdAtIso,
     createdAt: serverTimestamp()

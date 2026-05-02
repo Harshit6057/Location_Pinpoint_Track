@@ -42,9 +42,15 @@
 
       <div class="card">
         <h2>Mark Location</h2>
-        <p>After login, your live location syncs on the map. Use the button to pin current live location.</p>
+        <p>After login, your live location syncs on the map. Add an optional note and photo, then use the button to pin current live location.</p>
+        <div class="stack" style="margin-bottom: 1rem;">
+          <label for="locationNote">Note (Optional)</label>
+          <input id="locationNote" type="text" placeholder="e.g. Reached client site" />
+          <label for="locationPhoto">Photo (Optional)</label>
+          <input id="locationPhoto" type="file" accept="image/*" capture="environment" />
+        </div>
         <div class="row">
-          <button id="pinLiveLocationBtn" type="button">Pin Live Location</button>
+          <button id="pinLiveLocationBtn" type="button">Save Location & Photo</button>
         </div>
         <p id="liveLocationText" class="status">Live location not available</p>
         <div id="memberMap" class="map" role="application" aria-label="Member map"></div>
@@ -70,12 +76,11 @@
       <div class="card">
         <h2>Admin Login</h2>
         <form id="adminLoginForm" class="stack" autocomplete="off">
-          <label for="adminPassword">Dummy Password</label>
+          <label for="adminEmail">Admin Email</label>
           <div class="row">
-            <input id="adminPassword" name="adminPassword" type="password" placeholder="Enter admin password" required />
+            <input id="adminEmail" name="adminEmail" type="email" placeholder="Enter admin email" required />
             <button type="submit">Access</button>
           </div>
-          <small>Demo password: <strong>admin123</strong></small>
         </form>
         <p id="adminStatus" class="status">Admin locked</p>
       </div>
