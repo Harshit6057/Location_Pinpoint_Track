@@ -3,6 +3,4 @@ location-data.db
 location-data.db-shm
 location-data.db-wal
 firebase-debug.log
-.firebaserc
-firebase.json
-firestore.rules
+.firebase/

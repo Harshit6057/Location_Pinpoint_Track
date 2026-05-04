@@ -12,6 +12,10 @@ import {
   getDocs,
   where
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import {
+  getAuth,
+  signInAnonymously
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getStorage, ref, uploadBytesResumable, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -50,6 +54,7 @@ const nodes = {
   memberLocations: document.getElementById("memberLocations"),
   adminLoginForm: document.getElementById("adminLoginForm"),
   adminEmail: document.getElementById("adminEmail"),
+  adminPassword: document.getElementById("adminPassword"),
   adminStatus: document.getElementById("adminStatus"),
   adminContent: document.getElementById("adminContent"),
   memberFilter: document.getElementById("memberFilter"),
@@ -63,6 +68,7 @@ const nodes = {
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
 const storage = getStorage(firebaseApp);
 
 setupTabs();
@@ -163,6 +169,9 @@ function setupMemberLogin() {
     }
 
     try {
+      if (!auth.currentUser) {
+        await signInAnonymously(auth);
+      }
       await upsertMember(name);
       appState.currentMember = name;
       nodes.memberName.value = "";
@@ -181,19 +190,25 @@ function setupAdminLogin() {
   nodes.adminLoginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const email = nodes.adminEmail.value.trim().toLowerCase();
+    const password = nodes.adminPassword.value;
 
     nodes.adminStatus.textContent = "Checking admin access...";
 
     try {
+      if (!auth.currentUser) {
+        await signInAnonymously(auth);
+      }
+
       const adminQuery = query(
         collection(db, "Location_Pinpoint", "project_data", "admins"),
-        where("email", "==", email)
+        where("email", "==", email),
+        where("password", "==", password)
       );
       const snapshot = await getDocs(adminQuery);
 
       if (snapshot.empty) {
         appState.adminUnlocked = false;
-        nodes.adminStatus.textContent = "Access denied. Admin email not found.";
+        nodes.adminStatus.textContent = "Access denied. Admin credentials not found.";
         nodes.adminContent.classList.add("hidden");
         return;
       }
@@ -202,6 +217,7 @@ function setupAdminLogin() {
       nodes.adminStatus.textContent = "Admin unlocked.";
       nodes.adminContent.classList.remove("hidden");
       nodes.adminEmail.value = "";
+      nodes.adminPassword.value = "";
       renderAdminSection();
       setTimeout(() => appState.maps.admin.invalidateSize(), 100);
     } catch (err) {
